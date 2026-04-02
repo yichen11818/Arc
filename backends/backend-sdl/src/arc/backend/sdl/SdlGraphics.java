@@ -30,6 +30,9 @@ public class SdlGraphics extends Graphics{
     int backBufferHeight;
     int logicalWidth;
     int logicalHeight;
+    boolean windowsSafeBorderless;
+
+    private static final int windowsBorderlessOverhang = 1;
 
     SdlGraphics(SdlApplication app){
         this.app = app;
@@ -211,6 +214,7 @@ public class SdlGraphics extends Graphics{
 
         if(!getDisplayBounds(index, bounds)) return false;
 
+        disableWindowsSafeBorderless();
         Log.info("[Core][DPI] setFullscreen display=@ bounds=@,@ @x@", index, bounds[0], bounds[1], bounds[2], bounds[3]);
         SDL_SetWindowSize(app.window, bounds[2], bounds[3]);
         SDL_SetWindowFullscreen(app.window, SDL_WINDOW_FULLSCREEN);
@@ -219,6 +223,7 @@ public class SdlGraphics extends Graphics{
 
     @Override
     public boolean setWindowedMode(int width, int height){
+        disableWindowsSafeBorderless();
         Log.info("[Core][DPI] setWindowedMode request=@x@", width, height);
         SDL_SetWindowFullscreen(app.window, 0);
         SDL_SetWindowSize(app.window, width, height);
@@ -232,7 +237,10 @@ public class SdlGraphics extends Graphics{
 
     @Override
     public void setBorderless(boolean borderless){
-        boolean maximized = (SDL_GetWindowFlags(app.window) & SDL_WINDOW_MAXIMIZED) == SDL_WINDOW_MAXIMIZED;
+        int windowFlags = SDL_GetWindowFlags(app.window);
+        boolean maximized = (windowFlags & SDL_WINDOW_MAXIMIZED) == SDL_WINDOW_MAXIMIZED;
+        boolean desktopFullscreen = (windowFlags & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN_DESKTOP;
+        boolean focused = (windowFlags & SDL_WINDOW_INPUT_FOCUS) == SDL_WINDOW_INPUT_FOCUS;
         if(maximized && OS.isLinux){
             SDL_RestoreWindow(app.window);
         }
@@ -244,6 +252,28 @@ public class SdlGraphics extends Graphics{
 
         boolean foundBounds = borderless ? getDisplayBounds(index, bounds) : SDL_GetDisplayUsableBounds(index, bounds) == 0;
         if(!foundBounds) return;
+
+        if(OS.isWindows){
+            if(borderless){
+                int[] safeBounds = getWindowsSafeBorderlessBounds(index, bounds);
+
+                Log.info("[Core][DPI] setBorderless borderless=@ display=@ bounds=@,@ @x@ safe=@,@ @x@ focused=@ mode=windowed-safe",
+                    borderless, index, bounds[0], bounds[1], bounds[2], bounds[3], safeBounds[0], safeBounds[1], safeBounds[2], safeBounds[3], focused);
+
+                SDL_SetWindowFullscreen(app.window, 0);
+                SDL_SetWindowBordered(app.window, false);
+                SDL_SetWindowPosition(app.window, safeBounds[0], safeBounds[1]);
+                SDL_SetWindowSize(app.window, safeBounds[2], safeBounds[3]);
+
+                windowsSafeBorderless = true;
+                applyWindowsSafeBorderlessTopmost(focused);
+                return;
+            }else if(desktopFullscreen){
+                SDL_SetWindowFullscreen(app.window, 0);
+            }
+
+            disableWindowsSafeBorderless();
+        }
 
         Log.info("[Core][DPI] setBorderless borderless=@ display=@ bounds=@,@ @x@", borderless, index, bounds[0], bounds[1], bounds[2], bounds[3]);
         SDL_SetWindowBordered(app.window, !borderless);
@@ -271,6 +301,12 @@ public class SdlGraphics extends Graphics{
         SDL_GL_SetSwapInterval(vsync ? 1 : 0);
     }
 
+    void handleFocusChanged(boolean focused){
+        if(OS.isWindows && windowsSafeBorderless){
+            applyWindowsSafeBorderlessTopmost(focused);
+        }
+    }
+
     private boolean getDisplayBounds(int index, int[] bounds){
         int boundsResult = SDL_GetDisplayBounds(index, bounds);
         if(boundsResult != 0) return false;
@@ -292,6 +328,50 @@ public class SdlGraphics extends Graphics{
         }
 
         return true;
+    }
+
+    private int[] getWindowsSafeBorderlessBounds(int index, int[] displayBounds){
+        int[] safeBounds = displayBounds.clone();
+        int[] usableBounds = new int[4];
+
+        if(SDL_GetDisplayUsableBounds(index, usableBounds) == 0){
+            if(usableBounds[0] > displayBounds[0]){
+                safeBounds[0] -= windowsBorderlessOverhang;
+                safeBounds[2] += windowsBorderlessOverhang;
+            }else if(usableBounds[1] > displayBounds[1]){
+                safeBounds[1] -= windowsBorderlessOverhang;
+                safeBounds[3] += windowsBorderlessOverhang;
+            }else if(usableBounds[2] < displayBounds[2]){
+                safeBounds[2] += windowsBorderlessOverhang;
+            }else if(usableBounds[3] < displayBounds[3]){
+                safeBounds[3] += windowsBorderlessOverhang;
+            }else{
+                safeBounds[1] -= windowsBorderlessOverhang;
+                safeBounds[3] += windowsBorderlessOverhang;
+            }
+
+            Log.info("[Core][DPI] borderless-workarea display=@,@ @x@ usable=@,@ @x@ safe=@,@ @x@",
+                displayBounds[0], displayBounds[1], displayBounds[2], displayBounds[3],
+                usableBounds[0], usableBounds[1], usableBounds[2], usableBounds[3],
+                safeBounds[0], safeBounds[1], safeBounds[2], safeBounds[3]);
+        }else{
+            safeBounds[1] -= windowsBorderlessOverhang;
+            safeBounds[3] += windowsBorderlessOverhang;
+        }
+
+        return safeBounds;
+    }
+
+    private void disableWindowsSafeBorderless(){
+        if(OS.isWindows && windowsSafeBorderless){
+            applyWindowsSafeBorderlessTopmost(false);
+            windowsSafeBorderless = false;
+        }
+    }
+
+    private void applyWindowsSafeBorderlessTopmost(boolean topmost){
+        SDL_SetWindowAlwaysOnTop(app.window, topmost);
+        Log.info("[Core][DPI] borderless-topmost active=@ focus=@", windowsSafeBorderless, topmost);
     }
 
     @Override
